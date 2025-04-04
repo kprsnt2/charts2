@@ -1,138 +1,152 @@
-import streamlit as st
+# pages/csv_plotter.py
+import dash
+from dash import dcc, html, Input, Output, State, callback
+import dash_bootstrap_components as dbc
 import pandas as pd
 import plotly.express as px
-import xlrd  # Required for XLS file compatibility
+import base64
+import io
 
-# Custom sorting function to extract month and year and convert to a sortable format
-def custom_sort(date_str):
+# Register page in multi-page Dash app
+dash.register_page(__name__, name='CSV Plotter', order=4)
+
+# --- Layout ---
+layout = dbc.Container([
+    dbc.Row([
+        dbc.Col(html.H2("Interactive CSV Plotter"), width=12)
+    ]),
+    dbc.Row([
+        dbc.Col([
+            dcc.Upload(
+                id='upload-data',
+                children=html.Div(['Drag and Drop or ', html.A('Select Files')]),
+                style={
+                    'width': '100%',
+                    'height': '60px',
+                    'lineHeight': '60px',
+                    'borderWidth': '1px',
+                    'borderStyle': 'dashed',
+                    'borderRadius': '5px',
+                    'textAlign': 'center',
+                    'margin': '10px'
+                },
+                multiple=False
+            ),
+            html.Div(id='file-info'),
+            html.Div(id='data-preview')
+        ], width=12)
+    ]),
+
+    dbc.Row([
+        dbc.Col([
+            html.Div(id='controls-container')
+        ])
+    ]),
+
+    dbc.Row([
+        dbc.Col([
+            dcc.Graph(id='custom-plot')
+        ])
+    ])
+])
+
+# --- Helper to parse uploaded file ---
+def parse_data(contents, filename):
+    content_type, content_string = contents.split(',')
+    decoded = base64.b64decode(content_string)
     try:
-        return pd.to_datetime(date_str, format="%b-%y")
-    except ValueError:
-        return date_str
-
-# Set the title of your app
-st.title("Interactive Plotly Charts with Streamlit")
-st.write("Hello Data Nerd! 🤓")
-
-# Sample dataset
-# Sample dataset
-data = {
-    'Continent': ['Africa', 'Americas', 'Asia', 'Europe', 'Oceania'],
-    'Population': [6187585961, 7351438499, 30507333902, 6181115304, 212992136]
-}
-
-sample_df = pd.DataFrame(data)
-
-
-# Option to upload CSV, XLS, or XLSX file
-uploaded_file = st.file_uploader("Upload a Data File", type=["csv", "xlsx", "xls"])
-
-# Process data based on user input
-df = None
-
-if uploaded_file is not None:
-    try:
-        if uploaded_file.name.endswith('.csv'):
-            df = pd.read_csv(uploaded_file)
-        elif uploaded_file.name.endswith('.xlsx'):
-            df = pd.read_excel(uploaded_file)
-        elif uploaded_file.name.endswith('.xls'):
-            df = pd.read_excel(uploaded_file, engine='xlrd')
-        st.write("Uploaded Data (First 5 Rows):")
-        st.write(df.head())
-
-    except pd.errors.EmptyDataError:
-        st.warning("The uploaded file is empty.")
+        if filename.endswith('.csv'):
+            df = pd.read_csv(io.StringIO(decoded.decode('utf-8')))
+        elif filename.endswith('.xls') or filename.endswith('.xlsx'):
+            df = pd.read_excel(io.BytesIO(decoded))
+        else:
+            return None, html.Div(['Unsupported file format'])
     except Exception as e:
-        st.error(f"An error occurred: {str(e)}")
-else:
-    # Display the "Manually Enter Data" and "Use Sample Dataset" checkboxes
-    data_input_method = st.radio("Choose Data Input Method", ("Manually Enter Data", "Use Sample Dataset"), index=1)
-    
-    if data_input_method == "Manually Enter Data":
-        st.header("Enter Data Manually")
-        x_values = st.text_area("Enter X-axis data (comma-separated)")
-        y_values = st.text_area("Enter Y-axis data (comma-separated)")
+        return None, html.Div(['There was an error processing this file: {}'.format(str(e))])
+    return df, None
 
-        if x_values and y_values:
-            x_list = x_values.split(",")
-            y_list = y_values.split(",")
-            # Convert the y-values to numeric
-            y_list = [float(val) for val in y_list]
-            df = pd.DataFrame({"X-axis": x_list, "Y-axis": y_list})
+# --- Callbacks ---
+@callback(
+    Output('file-info', 'children'),
+    Output('data-preview', 'children'),
+    Output('controls-container', 'children'),
+    Input('upload-data', 'contents'),
+    State('upload-data', 'filename')
+)
+def update_output(contents, filename):
+    if contents is None:
+        return '', '', ''
 
-    else:
-        df = sample_df
+    df, error = parse_data(contents, filename)
+    if error:
+        return '', error, ''
 
+    preview = dbc.Table.from_dataframe(df.head(), striped=True, bordered=True, hover=True)
 
-# If data is available, proceed with plotting
-if df is not None and not df.empty:
-    # Select X and Y columns from the data
-    x_column = st.selectbox("Select X-axis data", df.columns)
-    y_column = st.selectbox("Select Y-axis data", df.columns, index = 1) #Index is used to select second column default
-    
-    # Convert x-axis data to numeric if it's numeric
-    if pd.api.types.is_numeric_dtype(df[x_column].dtype):
-        df[x_column] = df[x_column].astype(float)
+    controls = html.Div([
+        html.H5("Chart Controls"),
+        dbc.Row([
+            dbc.Col([
+                html.Label("X-axis"),
+                dcc.Dropdown(options=[{'label': col, 'value': col} for col in df.columns], id='x-axis')
+            ]),
+            dbc.Col([
+                html.Label("Y-axis"),
+                dcc.Dropdown(options=[{'label': col, 'value': col} for col in df.columns], id='y-axis')
+            ])
+        ]),
+        dbc.Row([
+            dbc.Col([
+                html.Label("Chart Type"),
+                dcc.Dropdown(
+                    options=[
+                        {'label': t, 'value': t} for t in ["bar", "scatter", "line", "area", "box", "pie"]
+                    ],
+                    value='bar',
+                    id='chart-type'
+                )
+            ])
+        ]),
+        dbc.Row([
+            dbc.Col([
+                html.Label("Chart Title"),
+                dcc.Input(id='chart-title', type='text', placeholder='Enter chart title...', style={'width': '100%'})
+            ])
+        ])
+    ])
 
-    if df[x_column].dtype == 'object':
-        df[x_column] = df[x_column].apply(custom_sort)
+    return html.Div([html.P(f"Uploaded file: {filename}")]), preview, controls
 
-    # Aggregate data based on the x-axis (e.g., sum values for the same year)
-    df = df.groupby(x_column, as_index=False).agg({y_column: 'sum'})
+@callback(
+    Output('custom-plot', 'figure'),
+    Input('x-axis', 'value'),
+    Input('y-axis', 'value'),
+    Input('chart-type', 'value'),
+    Input('chart-title', 'value'),
+    State('upload-data', 'contents'),
+    State('upload-data', 'filename')
+)
+def update_graph(x, y, chart_type, title, contents, filename):
+    if not contents or not x or not y:
+        return px.scatter(title="Waiting for input...")
 
-    df = df.sort_values(by=[x_column], key=custom_sort)
-
-    chart_title = f"{x_column} vs {y_column}"
-
-    labels = {}
-
-    # Allow users to set a custom chart title
-    custom_chart_title = st.text_input("Custom Chart Title", chart_title)
-
-    # Allow users to switch the x and y axes
-    switch_axes = st.checkbox("Switch X and Y axis")
-
-    if switch_axes:
-        x_column, y_column = y_column, x_column  # Swap x and y
-
-    # Allow users to choose colors
-    color_option = st.checkbox("Apply Colors", value=True)
-    if color_option:
-        color_column = st.selectbox("Select Color Column", df.columns)
-    else:
-        color_column = None
-
-    chart_type = st.selectbox("Select Chart Type", ["bar","scatter", "line", "area", "box", "treemap", "pie", "bubble", "scatter3d", "line3d"])
+    df, error = parse_data(contents, filename)
+    if error or df is None:
+        return px.scatter(title="Error loading file")
 
     if chart_type == "scatter":
-        fig = px.scatter(df, x=x_column, y=y_column, title=custom_chart_title, labels=labels, color=color_column)
-    elif chart_type ==  "line":
-        fig = px.line(df, x=x_column, y=y_column, title=custom_chart_title, labels=labels)
+        fig = px.scatter(df, x=x, y=y, title=title)
+    elif chart_type == "line":
+        fig = px.line(df, x=x, y=y, title=title)
     elif chart_type == "bar":
-        fig = px.bar(df, x=x_column, y=y_column, title=custom_chart_title, labels=labels, color=color_column)
+        fig = px.bar(df, x=x, y=y, title=title)
     elif chart_type == "area":
-        fig = px.area(df, x=x_column, y=y_column, title=custom_chart_title, labels=labels, color=color_column)
+        fig = px.area(df, x=x, y=y, title=title)
     elif chart_type == "box":
-        fig = px.box(df, x=x_column, y=y_column, title=custom_chart_title, labels=labels, color=color_column)
-    elif chart_type == "treemap":
-        fig = px.treemap(df, path=[x_column], values=y_column, title=custom_chart_title, labels=labels, color=color_column)
+        fig = px.box(df, x=x, y=y, title=title)
     elif chart_type == "pie":
-        fig = px.pie(df, names=x_column, values=y_column, title=custom_chart_title, labels=labels, color=color_column)
-    elif chart_type == "bubble":
-        fig = px.scatter(df, x=x_column, y=y_column, size=y_column, title=custom_chart_title, labels=labels, color=color_column)
-    elif chart_type == "scatter3d":
-        fig = px.scatter_3d(df, x=x_column, y=y_column, z=y_column, title=custom_chart_title, labels=labels, color=color_column)
-    elif chart_type == "line3d":
-        fig = px.line_3d(df, x=x_column, y=y_column, z=y_column, title=custom_chart_title, labels=labels)
-    st.plotly_chart(fig)
+        fig = px.pie(df, names=x, values=y, title=title)
+    else:
+        fig = px.scatter(df, x=x, y=y, title="Unsupported chart type")
 
-    # Show all data using a checkbox
-    show_all_data = st.checkbox("Data Summary Stats")
-    if show_all_data and df is not None and not df.empty:
-        st.subheader("Data Summary Statistics")
-        st.write(df.describe())
-    show_all_data2 = st.checkbox("Show All Data At Bottom")
-    if show_all_data2 and df is not None and not df.empty:
-        st.write("Entire Data:")
-        st.write(df)
+    return fig
